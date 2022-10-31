@@ -1,79 +1,140 @@
-# APP FLASK (commande : flask run)
-# Partie formulaire non utilisée (uniquement appel à l'API)
-
-from flask import Flask, render_template, jsonify, request, flash, redirect, url_for
-from flask_wtf import Form, validators
-from wtforms.fields import StringField
-from wtforms import TextField, BooleanField, PasswordField, TextAreaField, validators
-from wtforms.widgets import TextArea
-# from wtforms import Form, TextField, TextAreaField, validators, StringField, SubmitField
-
-from toolbox.predict import *
+import streamlit as st
 import pandas as pd
-import xgboost
+import numpy as np
+import matplotlib.pyplot as plt
+import pickle
+from PIL import Image
+from lime import lime_tabular
+from lime import lime_text
 
-import warnings
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# App config.
-DEBUG = True
-app = Flask(__name__)
-app.config.from_object(__name__)
-app.config['SECRET_KEY'] = '7d441f27d441f27567d441f2b6176a'
+st.set_option('deprecation.showPyplotGlobalUse', False)
 
 
-# formulaire d'appel à l'API (facultatif)
-class SimpleForm(Form):
-    form_id = TextField('id:', validators=[validators.required()])
+image = Image.open('image2.jpg')
+pickle_in= open("prevision_credit.pkl", "rb")
+load_model= pickle.load(pickle_in)
+pick = open("interpretability_list.pkl", "rb")
+load_exp = pickle.load(pick)
 
-    @app.route("/", methods=['GET', 'POST'])
-    def form():
-        form = SimpleForm(request.form)
-        print(form.errors)
-
-        if request.method == 'POST':
-            form_id = request.form['id']
-            print(form_id)
-            return (redirect('credit/' + form_id))
-
-        if form.validate():
-            # Save the comment here.
-            flash('Vous avez demandé l\'ID : ' + form_id)
-            redirect('')
-        else:
-            flash('Veuillez compléter le champ. ')
-
-        return render_template('formulaire_id.html', form=form)
+@st.cache
+def get_data(filename):
+    test = pd.read_csv(filename)
+    return test
 
 
-# Load Dataframe
-path_df = '../../Notebook & Data/data/custom/train.csv'
-dataframe = pd.read_csv(path_df)
+header = st.container()
+dataset = st.container()
+features= st.sidebar
+model_training = st.container()
+viz = st.container()
+domaine = st.container()
+features_importance= st.container()
+feature_locale = st.container()
+
+with header:
+    st.title('Home risk credit default')
+with dataset:
+
+    test = get_data("data_test.csv")
+    test_sample = test.sample(frac=.1, random_state=23)
+    test_sample= test_sample.drop("SK_ID_CURR.1",axis=1)
+
+    colonnes_tot = test_sample.columns
+    colonnes= colonnes_tot[1:]
+
+with model_training:
+
+    input_id = st.number_input("Veuillez saisir l'ID du client", value=413172.)
+
+    st.write("Exemple d'ID de bons payeurs: 229984, 227621, 347854")
+    st.write("Exemple d'ID de mauvais payeurs : 285870,150111, 188739 ")
+    if input_id ==100001.:
+
+        st.write("Entrez un ID valide")
+
+    else :
+        data_client=test_sample[test_sample['SK_ID_CURR'] == input_id]
+        prediction=load_model.predict(data_client[colonnes])
+
+        with features:
+
+            data_client = test_sample[test_sample['SK_ID_CURR'] == input_id]
+
+            st.write(data_client)
+
+            parametre = st.selectbox("Choisissez le paramètre que vous souhaitez modifier", colonnes)
+            if parametre in colonnes:
+                old_value = data_client[parametre].values[0]
+                new_value = st.slider(parametre, 0., 1.)
+                data_client[parametre].replace(old_value, new_value, inplace=True)
+            st.write(data_client)
+            prediction = load_model.predict(data_client[colonnes])
+
+            if prediction == 1:
+                log_reg_pred = load_model.predict_proba(data_client[colonnes])[:, 0]
+                st.write("Nouveau Score:", round(log_reg_pred.min() * 100, 2), "%")
+            else:
+
+                log_reg_pred = load_model.predict_proba(data_client[colonnes])[:, 0]
+                st.write("Nouveau score:", round(log_reg_pred.min() * 100, 2), "%")
+
+        if prediction ==1:
+            log_reg_pred = load_model.predict_proba(data_client[colonnes])[:, 0]
+            st.write("Le prêt n'est pas accordé, Probabilité de rembourser:", round(log_reg_pred.min() * 100, 2), "%")
+        else :
+
+            log_reg_pred = load_model.predict_proba(data_client[colonnes])[:, 0]
+            st.write("## Félicitations, le prêt est accordé, Probabilité de rembourser sa dette:", round(log_reg_pred.min()*100, 2),"%")
 
 
-@app.route('/credit/<id_client>', methods=['GET'])
-def credit(id_client):
-    # récupération id client depuis argument url
-    # id_client = request.args.get('id_client', default=1, type=int)
+with domaine:
+    data_test= test_sample.copy()
+    data_test=data_test.reset_index()
+    data_test_1 = data_test[colonnes]
+    predict_tot= load_model.predict(data_test_1)
+    predict_tot = pd.DataFrame(predict_tot, columns=["prediction"])
+    data_test_1=pd.concat([data_test,predict_tot], axis=1)
 
-    # DEBUG
-    # print('id_client : ', id_client)
-    # print('shape df ', dataframe.shape)
+    df1= data_test_1[data_test_1["prediction"] == 1]
 
-    # calcul prédiction défaut et probabilité de défaut
-    prediction, proba = predict_flask(id_client, dataframe)
-
-    dict_final = {
-        'prediction': int(prediction),
-        'proba': float(proba[0][0])
-    }
-
-    print('Nouvelle Prédiction : \n', dict_final)
-
-    return jsonify(dict_final)
+    df1_row=df1.mean()
+    Mean_non_payeur=df1_row.to_frame().T
+    df0= data_test_1[data_test_1["prediction"]==0]
+    df0_row = df0.mean()
+    Mean_payeur = df0_row.to_frame().T
 
 
-# lancement de l'application
-if __name__ == "__main__":
-    app.run(debug=True)
+with viz :
+    data_client = test_sample[test_sample['SK_ID_CURR'] == input_id]
+
+    data_viz = pd.concat([data_client[colonnes], Mean_payeur])
+    data_viz = pd.concat([data_viz, Mean_non_payeur])
+    param = st.selectbox("Choisir un paramètre ", colonnes)
+    data_1= data_viz[param]
+    labels = ["Client", "Moyenne Payeur", "Moyenne Non Payeur"]
+    sizes = [100, 200, 50]
+
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.pie(data_1, labels=labels, autopct="%1.1f%%")
+    ax.axis("equal")
+
+    st.pyplot(fig)
+
+with features_importance:
+    if prediction == 1:
+        explainer = lime_tabular.LimeTabularExplainer(training_data= np.array(test_sample[colonnes]),
+                                                  mode="classification", feature_names=colonnes)
+        exp = explainer.explain_instance(data_row=data_viz[colonnes].iloc[0], predict_fn=load_model.predict_proba)
+        fig1 =exp.as_pyplot_figure()
+        fig2 = exp.show_in_notebook(show_table=True)
+        st.pyplot(fig1)
+
+
+
+
+
+
+
+
+
+
